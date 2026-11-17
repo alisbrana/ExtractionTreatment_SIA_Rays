@@ -1,0 +1,386 @@
+---
+title: "Effects of lipid–urea extraction protocols on stable isotope values in two Mediterranean myliobatid"
+author: "Sbrana"
+date: "2026-11-17"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document: default
+  word_document:
+    reference_docx: default
+editor_options:
+  markdown:
+    wrap: sentence
+---
+
+# Abstract
+
+Stable isotope analysis is widely used to investigate elasmobranch trophic ecology, but processes like lipid and urea extraction can alter isotopic values, limiting comparisons among studies.
+We evaluated two extraction protocols in two vulnerable batoid species, the eagle ray (*Myliobatis aquila*) and bull ray (*Aetomylaeus bovinus*), which are rarely available for study.
+The extraction method significantly affected δ¹⁵N in *M. aquila*, but not in *A. bovinus*, whereas δ¹³C was not significantly affected in either species.
+These findings highlight the importance of considering extraction procedures when interpreting stable isotope data in batoids.
+
+# Results
+
+```{r library, message=FALSE, warning=FALSE, echo=FALSE}
+
+library(dplyr)
+library(broom.mixed)
+library(cowplot) 
+library(ggimage)
+library(ggplot2)
+library(ggrepel)
+library(ggpubr)
+library(forcats)
+library(grid)
+library(gtable)
+library(gridExtra)
+library(lme4)
+library(lmerTest)   
+library(emmeans) 
+library(patchwork)
+library(openxlsx)
+library(MASS)
+library(reshape2)
+library(rstatix)
+library(sjPlot)
+library(knitr)
+library(kableExtra)
+library(broom) 
+library(webshot2)
+
+```
+
+```{r data, message=FALSE, warning=FALSE , echo=FALSE}
+siaBIO = read.csv("Rays_SIA.csv")
+
+siaBIO$Method = factor(siaBIO$Method, levels = c("Natural", "Chloroform_Methanol ", "Petroleum Ether" ))
+siaBIO$ScientificName = ifelse(siaBIO$Species == "Ma", "Myliobatis aquila", "Aetomylaeus bovisus")
+
+```
+
+## Dry mass loss (%)
+
+The initial and final dry weights were recorded to calculate the percentage of dry mass loss during extraction as follows: [dry]{.underline} mass loss (%) = [(initial dry weight − final dry weight) / initial dry weight] × 100. This measure quantifies the overall loss of dry mass during treatment and does not distinguish between lipids, urea, and other potentially extracted compounds.
+
+Dry mass loss and C:N ratios were compared using two-way analyses of variance (ANOVA), with extraction method (Natural, CM and PE) and species as fixed factors, including their interaction (Method ×
+Species).
+
+```{r dry mass loss, message=FALSE, warning=FALSE, echo=FALSE}
+
+siaBIO <- siaBIO |> 
+  mutate(mloss = (Initial_dry_weight- Final_dry_weight)/Initial_dry_weight,
+         mloss_perc = mloss*100) 
+
+stat.test <- siaBIO |>
+  filter(Method != "Natural") |> 
+  group_by(Method) |>
+  anova_test(mloss_perc ~ Species) 
+
+# Confronti post-hoc
+tukey <- siaBIO |>
+  filter(Method != "Natural") |>
+  group_by(Method) |>
+  tukey_hsd(mloss_perc ~ Species) |>
+  add_xy_position(x = "Species")
+
+# Boxplot con significatività
+siaBIO |> 
+filter(Method != "Natural") |>
+ggplot(aes(x = Species, y = mloss_perc)) +
+  geom_boxplot() +
+  facet_wrap(~ Method) +
+  stat_pvalue_manual(
+    tukey,
+    label = "p.adj.signif",
+    tip.length = 0.01,
+    hide.ns = TRUE
+  ) +
+  theme_classic()
+  
+  
+
+
+
+kable(siaBIO |> 
+filter(Method != "Natural") |>   group_by(Species,Method) |> 
+summarise(mean_mloss = round(mean(mloss_perc),2),
+            sd_mloss = round(sd(mloss_perc),2)))
+
+
+```
+
+```{r C/N analysis, message=FALSE, warning=FALSE, echo=FALSE}
+
+kable(siaBIO %>% 
+  group_by(Method,Species) %>% 
+  summarise(CNratio_mean = mean(CNratio), sd = sd(CNratio)))
+
+my_comparisons <- list(c("Natural", "Chloroform_Methanol"), c("Chloroform_Methanol", "Petroleum Ether"), c("Natural", "Petroleum Ether"))
+
+ggboxplot(siaBIO, x = "Method", y = "CNratio",
+          color = "Method", palette = "jco", add = "jitter") +
+  rotate_x_text(45)+
+  stat_compare_means() +
+  facet_wrap(~ Species)
+
+siaBIO$Method <- factor(siaBIO$Method)
+siaBIO$Species <- factor(siaBIO$Species)
+
+mod <- aov(CNratio ~ Method * Species, data = siaBIO)
+
+tab <- as.data.frame(summary(mod)[[1]])
+
+kable(tab,
+      caption = "ANOVA",
+      digits = 3)
+```
+
+# SIA analysis
+
+Linear mixed-effects models (LMMs) were fitted to assess the effects of species, extraction method (PE and CM), and their interaction on δ¹³C and δ¹⁵N values, including individuals as a random intercept to account for non-independence among observations.
+Separate models were also fitted for each isotope and species, including extraction method as a fixed effect and individual identity as a random effect to account for repeated measurements across extraction treatments.
+Post-hoc pairwise comparisons were performed to investigate differences between species and extraction methods.
+
+```{r sia analysis, fig.width= 9, fig.height= 8, message=FALSE, warning=FALSE, echo=FALSE}
+
+summ_statsN <- siaBIO %>%
+  group_by(Species,Method) %>%
+  summarise(mean=round(mean(dNrec), 2), 
+            sd= round(sd(dNrec),2), 
+            Q3= round(quantile(dNrec, 0.75), 2),.groups = 'drop')
+ 
+kable(summ_statsN)
+
+ summ_statsC <- siaBIO %>%
+  group_by(Species, Method) %>%
+  summarise(mean= round(mean(dCrec), 2), 
+            sd= round(sd(dCrec), 2), 
+            Q1= round(quantile(dCrec, 0.25), 2),.groups = 'drop')
+ 
+ kable(summ_statsC)
+ 
+```
+
+### Effect of extraction methods on δ¹³C values in all species
+
+```{r LMM all species d13C, message=FALSE, warning=FALSE, echo=FALSE}
+
+siaBIO_sub <- siaBIO |>
+  filter(Method != "Natural") |>
+  mutate(
+    Species = factor(Species,
+                     levels = c("Ma", "Ab")),
+    Method = factor(Method,
+                    levels = c("Petroleum Ether", "Chloroform_Methanol "))
+  )
+
+mod_d13C_tratt <- lmer(
+  dCrec ~ Species * Method + (1 | ID_new),
+  data = siaBIO_sub
+)
+
+# tab_model(
+#   mod_d13C_tratt,
+#   dv.labels = "δ¹³C",
+#   pred.labels = c(
+#     "(Intercept)" = "Intercept",
+#     "Species1" = "Ma vs Ab",
+#     "Method1" = "Petroleum Ether vs Chloroform-Methanol",
+#     "Species1:Method1" = "Species × Method"
+#   ),
+# 
+#   show.est = TRUE,
+#   show.ci = 0.95,
+#   show.se = FALSE,
+#   show.p = TRUE,
+# 
+#   show.re.var = TRUE,
+#   show.icc = FALSE,
+#   show.r2 = TRUE,
+#   show.obs = TRUE,
+# 
+#   digits = 2,
+#   digits.p = 3,
+#   file = "Paper/Results/tab1_all species.doc"
+# )
+
+tab <- tidy(mod_d13C_tratt, effects = "fixed")
+
+
+kable(tab, caption = "LMM", digits = 3)
+```
+
+### Effect of extraction methods on δ¹⁵N values in all species
+
+```{r lMM all species d15N, message=FALSE, warning=FALSE, echo=FALSE}
+
+mod_d15N_tratt <- lmer(dNrec ~ Species * Method + (1 | ID_new), data = siaBIO_sub)
+
+# tab_model(
+#   mod_d15N_tratt,
+#   dv.labels = "δ¹N",
+#   pred.labels = c(
+#     "(Intercept)" = "Intercept",
+#     "Species1" = "Ma vs Ab",
+#     "Method1" = "Petroleum Ether vs Chloroform-Methanol",
+#     "Species1:Method1" = "Species × Method"
+#   ),
+# 
+#   show.est = TRUE,
+#   show.ci = 0.95,
+#   show.se = FALSE,
+#   show.p = TRUE,
+# 
+#   show.re.var = TRUE,
+#   show.icc = FALSE,
+#   show.r2 = TRUE,
+#   show.obs = TRUE,
+# 
+#   digits = 2,
+#   digits.p = 3,
+#   file = "Paper/Results/tab2_all species.doc"
+# )
+
+tab <- tidy(mod_d15N_tratt, effects = "fixed")
+
+
+kable(tab, caption = "LMM", digits = 3)
+```
+
+### Effect of extraction methods on δ¹³C values in *Myliobatis aquila*
+
+The LMM does not show a significant effect of extraction method on δ¹³C (ANOVA: p = 0.18).
+Although the chloroform/methanol treatment shows a tendency toward more negative values compared to natural samples, post-hoc comparisons are not significant.
+
+```{r LMM Myliobatis d13C, message=FALSE, warning=FALSE, echo=FALSE}
+SIA_Ma = siaBIO %>% filter(Species == "Ma")
+
+mod_d13C_tratt <- lmer(dCrec ~ Method + (1 | ID_new), data = SIA_Ma)
+
+emmeans_d13C <- emmeans(mod_d13C_tratt, ~ Method)
+
+```
+
+```{r table models d13C Ma, message=FALSE, warning=FALSE, echo=FALSE}
+
+# tab_model(mod_d13C_tratt, 
+#           title = "Table 1: Results of the mixed model for δ¹³C (Ma species)",
+#           dv.labels = "δ¹³C",
+#           string.p = "p-value",
+#           file = "Paper/Results/tab1_new.doc")
+tab <- tidy(mod_d13C_tratt, effects = "fixed")
+
+
+kable(tab, caption = "LMM", digits = 3)
+```
+
+```{r table models d13C2 Ma, message=FALSE, warning=FALSE, echo=FALSE}
+
+anova_res <- as.data.frame(anova(mod_d13C_tratt))
+kable(anova_res, caption = "ANOVA test (Type III) for the effect of the Method", digits = 3) 
+
+pairs_df <- as.data.frame(pairs(emmeans_d13C, adjust = "tukey"))
+
+kable(pairs_df, caption = "Post-hoc comparisons (Tukey) between sampling methods") 
+```
+
+### Effect of extraction methods on δ¹⁵N values in *Myliobatis aquila*
+
+The extraction method has a significant effect on δ¹⁵N (p = 0.017).
+Specifically, chloroform/methanol treatment causes a significant increase in δ¹⁵N compared to natural samples.
+Petroleum ether does not differ significantly from untreated samples.
+
+```{r lMM myliobatis d15N, message=FALSE, warning=FALSE, echo=FALSE}
+mod_d15N_tratt <- lmer(dNrec ~ Method + (1 | ID_new), data = SIA_Ma)
+emmeans_d15N <- emmeans(mod_d15N_tratt, ~ Method)
+
+```
+
+```{r table models d15N Ma, message=FALSE, warning=FALSE, echo=FALSE}
+# tab_model(mod_d15N_tratt, 
+#           title = "Table 4: Results of the mixed model for δ¹⁵N (Ma species)",
+#           dv.labels = "δ¹⁵N",
+#           string.p = "p-value",
+#           file = "Paper/Results/tab4.doc")
+
+tab <- tidy(mod_d15N_tratt, effects = "fixed")
+
+
+kable(tab, caption = "LMM", digits = 3)
+```
+
+```{r table models d15N2 Ma, message=FALSE, warning=FALSE, echo=FALSE}
+anova_res <- as.data.frame(anova(mod_d15N_tratt))
+kable(anova_res, caption = "ANOVA test (Type III) for the effect of the Method", digits = 3) 
+
+pairs_df <- as.data.frame(pairs(emmeans_d15N, adjust = "tukey"))
+
+kable(pairs_df, caption = "Post-hoc comparisons (Tukey) between sampling methods") 
+```
+
+### Effect of extraction methods on δ¹³C values in *Aetomylaeus bovinus*
+
+The model shows a marginal effect of extraction method on δ¹³C (p = 0.066).
+The comparison between chloroform/methanol and petroleum ether suggests a potential difference, but it is not significant after correction for multiple comparisons.
+
+```{r LMM Aetomylaeus d13C, message=FALSE, warning=FALSE, echo=FALSE}
+SIA_Ab = siaBIO %>% filter(Species == "Ab")
+
+mod_d13C_tratt <- lmer(dCrec ~ Method + (1 | ID_new), data = SIA_Ab)
+emmeans_d13C <- emmeans(mod_d13C_tratt, ~ Method)
+
+```
+
+```{r table model d13C Ab, message=FALSE, warning=FALSE, echo=FALSE}
+# tab_model(mod_d13C_tratt, 
+#           title = "Results of the mixed model for δ¹³C (Ab species)",
+#           dv.labels = "δ¹³C",
+#           string.p = "p-value",
+#           file = "Paper/Results/tab7.doc")
+
+tab <- tidy(mod_d13C_tratt, effects = "fixed")
+
+
+kable(tab, caption = "LMM", digits = 3)
+```
+
+```{r table model d13C2 Ab, message=FALSE, warning=FALSE, echo=FALSE}
+anova_res <- as.data.frame(anova(mod_d13C_tratt))
+kable(anova_res, caption = "ANOVA test (Type III) for the effect of the Method", digits = 3)
+
+pairs_df <- as.data.frame(pairs(emmeans_d13C, adjust = "tukey"))
+
+kable(pairs_df, caption = "Post-hoc comparisons (Tukey) between sampling methods") 
+```
+
+### Effect of extraction methods on "δ¹⁵N" values in *Aetomylaeus bovinus*
+
+The extraction method has no significant effect on δ¹⁵N (p = 0.40).
+Values are consistent across the three treatments.
+
+```{r Aetomylaeus d15N, message=FALSE, warning=FALSE, echo=FALSE}
+mod_d15N_tratt <- lmer(dNrec ~ Method + (1 | ID_new), data = SIA_Ab)
+emmeans_d15N <- emmeans(mod_d15N_tratt, ~ Method)
+```
+
+```{r table models d15N Ab, message=FALSE, warning=FALSE, echo=FALSE}
+# tab_model(mod_d15N_tratt, 
+#           title = "Table 10: Results of the mixed model for δ¹⁵N (Ab species)",
+#           dv.labels = "δ¹⁵N",
+#           string.p = "p-value",
+#           file = "Paper/Results/tab10.doc")
+tab <- tidy(mod_d15N_tratt, effects = "fixed")
+
+
+kable(tab, caption = "LMM", digits = 3)
+```
+
+```{r table models d15N2 Ab, message=FALSE, warning=FALSE, echo=FALSE}
+anova_res <- as.data.frame(anova(mod_d15N_tratt))
+kable(anova_res, caption = "ANOVA test (Type III) for the effect of the Method", digits = 3)
+
+pairs_df <- as.data.frame(pairs(emmeans_d15N, adjust = "tukey"))
+
+kable(pairs_df, caption = "Post-hoc comparisons (Tukey) between sampling methods") 
+```
